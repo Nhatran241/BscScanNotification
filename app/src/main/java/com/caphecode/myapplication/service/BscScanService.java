@@ -110,9 +110,7 @@ public class BscScanService extends AccessibilityService {
         BroadcastReceiver broadcastReceiver = new BroadcastReceiver() {
             @Override
             public void onReceive(Context context, Intent intent) {
-                if(!isChromeRunning()) {
-                    openBscScanFromChrome();
-                }
+                openBscScanFromChrome();
             }
         };
         IntentFilter intentFilter = new IntentFilter();
@@ -134,9 +132,15 @@ public class BscScanService extends AccessibilityService {
         List<Transaction> listTransactionShark = new ArrayList<>();
         List<Transaction> listTransactionWhale = new ArrayList<>();
         for (Transaction transaction : listTransaction) {
-            if (transaction.getQuantity() > 1 && !transaction.isNoty()) {
+            if ((transaction.getQuantity() > 10 && !transaction.isNoty())) {
                 transaction.setNoty(true);
                 listTransactionWhale.add(transaction);
+                continue;
+            }
+
+            if ((transaction.getQuantity() > 1 && !transaction.isNoty())) {
+                transaction.setNoty(true);
+                listTransactionShark.add(transaction);
             }
         }
 
@@ -144,7 +148,8 @@ public class BscScanService extends AccessibilityService {
             String messages = getSlackMessages(listTransactionWhale);
             SlackLogUtils.getInstance(this).sendSlackNotification(messages, SlackLogUtils.WHALE_URL, isSuccess -> {
                 if (listTransactionShark.size() > 0) {
-                    SlackLogUtils.getInstance(this).sendSlackNotification(messages, SlackLogUtils.SHARK_URL, isSuccessShark -> {
+                    String messagesShark = getSlackMessages(listTransactionShark);
+                    SlackLogUtils.getInstance(this).sendSlackNotification(messagesShark, SlackLogUtils.SHARK_URL, isSuccessShark -> {
                         while (listTransaction.size() > 30) {
                             listTransaction.remove(0);
                         }
@@ -158,8 +163,8 @@ public class BscScanService extends AccessibilityService {
                 }
             });
         } else if (listTransactionShark.size() > 0) {
-            String messages = getSlackMessages(listTransactionWhale);
-            SlackLogUtils.getInstance(this).sendSlackNotification(messages, SlackLogUtils.SHARK_URL, isSuccessShark -> {
+            String messagesShark = getSlackMessages(listTransactionShark);
+            SlackLogUtils.getInstance(this).sendSlackNotification(messagesShark, SlackLogUtils.SHARK_URL, isSuccessShark -> {
                 while (listTransaction.size() > 30) {
                     listTransaction.remove(0);
                 }
@@ -173,8 +178,12 @@ public class BscScanService extends AccessibilityService {
         }
     }
 
+    private boolean transferBinance(Transaction transaction) {
+        return (transaction.getFrom().contains("Binance") || transaction.getTo().contains("Binance")) && transaction.getQuantity() > 0.1;
+    }
+
     private String getSlackMessages(List<Transaction> listTransactionNoty) {
-        String blocks = "";
+        String blocks = "{\"text\": \"";
 
         for (Transaction transaction : listTransactionNoty) {
             String from = transaction.getFrom().length() > 7 ? transaction.getFrom().substring(0, 6) : transaction.getFrom();
@@ -182,19 +191,11 @@ public class BscScanService extends AccessibilityService {
             String name = transaction.getTag();
             String total = String.valueOf(transaction.getQuantity());
             total = total.length() > 8 ? total.substring(0, 7) : total;
-            String messages = "{\n" +
-                    "      \"type\": \"section\",\n" +
-                    "      \"text\": {\n" +
-                    "        \"type\": \"mrkdwn\",\n" +
-                    "        \"text\": \"*From* `%s` *To* `%s` *%s* `%s`\"\n" +
-                    "      }\n" +
-                    "    }";
-            blocks += String.format(messages, from, to, name, total);
-            blocks += (',');
+            String messages = "*%s* `%s` *From* `%s` *To* `%s`";
+            blocks += String.format(messages, name, total, from, to);
+            blocks += ('\n');
         }
-        blocks = blocks.substring(0, blocks.length() - 1);
-        String block = "{\n  \"blocks\": [" + blocks + "]\n}";
-        return block;
+        return blocks +"\"}";
     }
 
     private Transaction getBscTransaction(Element element) {
