@@ -1,9 +1,13 @@
 package com.caphecode.myapplication.service;
 
+import static android.content.Intent.ACTION_TIME_TICK;
+
 import android.accessibilityservice.AccessibilityService;
+import android.app.ActivityManager;
 import android.content.BroadcastReceiver;
-import android.content.ContentResolver;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.net.Uri;
 import android.provider.Browser;
 import android.util.Log;
@@ -13,28 +17,12 @@ import android.view.accessibility.AccessibilityNodeInfo;
 import com.caphecode.myapplication.SlackLogUtils;
 import com.caphecode.myapplication.model.SlackLogModel;
 import com.caphecode.myapplication.model.Transaction;
-import com.google.gson.Gson;
 
-import org.apache.http.HttpResponse;
-import org.apache.http.client.HttpClient;
-import org.apache.http.client.methods.HttpGet;
-import org.apache.http.impl.client.DefaultHttpClient;
-import org.apache.http.protocol.BasicHttpContext;
-import org.apache.http.protocol.HttpContext;
-import org.jsoup.Jsoup;
-import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
 import org.jsoup.select.Elements;
 
-import java.io.BufferedReader;
-import java.io.IOException;
-import java.io.InputStreamReader;
 import java.util.ArrayList;
 import java.util.List;
-
-import io.reactivex.rxjava3.android.schedulers.AndroidSchedulers;
-import io.reactivex.rxjava3.core.Observable;
-import io.reactivex.rxjava3.schedulers.Schedulers;
 
 /**
  * Created by Nhatran241 on 12/5/2021.
@@ -59,6 +47,19 @@ public class BscScanService extends AccessibilityService {
         processBSCData(nodeInfo, depth);
     }
 
+    private boolean isChromeRunning() {
+        final ActivityManager activityManager = (ActivityManager) getSystemService(Context.ACTIVITY_SERVICE);
+        final List<ActivityManager.RunningAppProcessInfo> procInfos = activityManager.getRunningAppProcesses();
+        if (procInfos != null) {
+            for (final ActivityManager.RunningAppProcessInfo processInfo : procInfos) {
+                if (processInfo.processName.equals("com.android.chrome")) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     private void processBSCData(AccessibilityNodeInfo nodeInfo, int depth) {
         if (nodeInfo != null) {
             if (depth == 20 && nodeInfo.getClassName().equals("android.widget.GridView")) {
@@ -81,7 +82,6 @@ public class BscScanService extends AccessibilityService {
                         }
                         transaction.setQuantity(quantity);
                         if (!transactions.contains(transaction)) {
-                            Log.d("nhatnhat", transaction.getTxn() + "/" + transaction.getMethod() + "/" + transaction.getAge() + "/" + transaction.getFrom() + "/" + transaction.getTo() + "/" + transaction.getQuantity());
                             transactions.add(transaction);
                         }
 
@@ -107,32 +107,59 @@ public class BscScanService extends AccessibilityService {
     protected void onServiceConnected() {
         super.onServiceConnected();
         openBscScanFromChrome();
+        BroadcastReceiver broadcastReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                if(!isChromeRunning()) {
+                    openBscScanFromChrome();
+                }
+            }
+        };
+        IntentFilter intentFilter = new IntentFilter();
+        intentFilter.addAction(ACTION_TIME_TICK);
+        registerReceiver(broadcastReceiver, intentFilter);
     }
 
     private void openBscScanFromChrome() {
         isProcessing = false;
-        String url = "https://bscscan.com/token/0x7083609fce4d1d8dc0c979aab8c869ea2c873402?" + System.currentTimeMillis();
+        String url = "https://bscscan.com/token/0x7130d2a12b9bcbfae4f2634d864a1ee1ce3ead9c?" + System.currentTimeMillis();
         Intent myIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
         myIntent.putExtra(Browser.EXTRA_APPLICATION_ID, getPackageName());
-//        myIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_DOCUMENT);
         myIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         startActivity(myIntent);
     }
 
     private void processPrediction(List<Transaction> listTransaction) {
         isProcessing = true;
-        List<Transaction> listTransactionNoty = new ArrayList<>();
+        List<Transaction> listTransactionShark = new ArrayList<>();
+        List<Transaction> listTransactionWhale = new ArrayList<>();
         for (Transaction transaction : listTransaction) {
             if (transaction.getQuantity() > 1 && !transaction.isNoty()) {
                 transaction.setNoty(true);
-                listTransactionNoty.add(transaction);
+                listTransactionWhale.add(transaction);
             }
         }
 
-        if (listTransactionNoty.size() > 0) {
-            String slackMessages = getSlackMessages(listTransactionNoty);
-            SlackLogModel slackLogModel = new SlackLogModel("DOT", slackMessages);
-            SlackLogUtils.getInstance(this).sendSlackNotification(slackLogModel, isSuccess -> {
+        if (listTransactionWhale.size() > 0) {
+            String messages = getSlackMessages(listTransactionWhale);
+            SlackLogUtils.getInstance(this).sendSlackNotification(messages, SlackLogUtils.WHALE_URL, isSuccess -> {
+                if (listTransactionShark.size() > 0) {
+                    SlackLogUtils.getInstance(this).sendSlackNotification(messages, SlackLogUtils.SHARK_URL, isSuccessShark -> {
+                        while (listTransaction.size() > 30) {
+                            listTransaction.remove(0);
+                        }
+                        openBscScanFromChrome();
+                    });
+                } else {
+                    while (listTransaction.size() > 30) {
+                        listTransaction.remove(0);
+                    }
+                    openBscScanFromChrome();
+                }
+            });
+        } else if (listTransactionShark.size() > 0) {
+            String messages = getSlackMessages(listTransactionWhale);
+            SlackLogUtils.getInstance(this).sendSlackNotification(messages, SlackLogUtils.SHARK_URL, isSuccessShark -> {
                 while (listTransaction.size() > 30) {
                     listTransaction.remove(0);
                 }
@@ -147,14 +174,27 @@ public class BscScanService extends AccessibilityService {
     }
 
     private String getSlackMessages(List<Transaction> listTransactionNoty) {
-        StringBuilder messages = new StringBuilder();
+        String blocks = "";
+
         for (Transaction transaction : listTransactionNoty) {
-            messages.append(transaction.getMethod());
-            messages.append(" : ");
-            messages.append(transaction.getQuantity());
-            messages.append("\n");
+            String from = transaction.getFrom().length() > 7 ? transaction.getFrom().substring(0, 6) : transaction.getFrom();
+            String to = transaction.getTo().length() > 7 ? transaction.getTo().substring(0, 6) : transaction.getTo();
+            String name = transaction.getTag();
+            String total = String.valueOf(transaction.getQuantity());
+            total = total.length() > 8 ? total.substring(0, 7) : total;
+            String messages = "{\n" +
+                    "      \"type\": \"section\",\n" +
+                    "      \"text\": {\n" +
+                    "        \"type\": \"mrkdwn\",\n" +
+                    "        \"text\": \"*From* `%s` *To* `%s` *%s* `%s`\"\n" +
+                    "      }\n" +
+                    "    }";
+            blocks += String.format(messages, from, to, name, total);
+            blocks += (',');
         }
-        return messages.toString();
+        blocks = blocks.substring(0, blocks.length() - 1);
+        String block = "{\n  \"blocks\": [" + blocks + "]\n}";
+        return block;
     }
 
     private Transaction getBscTransaction(Element element) {

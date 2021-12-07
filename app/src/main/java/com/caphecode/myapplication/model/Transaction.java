@@ -12,6 +12,7 @@ public class Transaction {
     private String age;
     private String from;
     private String to;
+    private String tag = "BTC";
     private double quantity;
     private boolean isNoty = false;
 
@@ -82,6 +83,14 @@ public class Transaction {
 
     public void setNoty(boolean noty) {
         isNoty = noty;
+    }
+
+    public String getTag() {
+        return tag;
+    }
+
+    public void setTag(String tag) {
+        this.tag = tag;
     }
 
     @Override
